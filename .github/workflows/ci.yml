@@ -60,7 +60,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Start services
-        run: docker compose up -d --build --wait
+        run: |
+          docker network create kafka-stack-docker-compose_default
+          docker compose up -d --build --wait
         timeout-minutes: 10
       - name: Wait for services to be ready
         run: |
