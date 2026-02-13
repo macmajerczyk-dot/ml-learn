@@ -1,0 +1,111 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ml-worker-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: ml-worker
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+data:
+  MLW_KAFKA_BOOTSTRAP_SERVERS: {{ include "ml-pipeline.kafkaBootstrapServers" . | quote }}
+  MLW_MODEL_DEVICE: {{ .Values.mlWorker.env.MLW_MODEL_DEVICE | quote }}
+  MLW_LOG_LEVEL: {{ .Values.mlWorker.env.MLW_LOG_LEVEL | quote }}
+  MLW_METRICS_PORT: {{ .Values.mlWorker.metricsPort | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: ml-worker
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.mlWorker.modelCacheSize }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-worker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: ml-worker
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.mlWorker.replicaCount }}
+  selector:
+    matchLabels:
+      app: ml-worker
+  template:
+    metadata:
+      labels:
+        app: ml-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.mlWorker.metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: ml-worker
+          image: "{{ .Values.mlWorker.image.repository }}:{{ .Values.mlWorker.image.tag }}"
+          imagePullPolicy: {{ .Values.mlWorker.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.mlWorker.metricsPort }}
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: ml-worker-config
+          resources:
+            {{- toYaml .Values.mlWorker.resources | nindent 12 }}
+          volumeMounts:
+            - name: model-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-worker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: ml-worker
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+spec:
+  ports:
+    - port: {{ .Values.mlWorker.metricsPort }}
+      targetPort: {{ .Values.mlWorker.metricsPort }}
+      name: metrics
+  selector:
+    app: ml-worker
+{{- if .Values.mlWorker.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ml-worker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: ml-worker
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ml-worker
+  minReplicas: {{ .Values.mlWorker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.mlWorker.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.mlWorker.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

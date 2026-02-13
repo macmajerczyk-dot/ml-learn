@@ -1,0 +1,134 @@
+{{- if .Values.kafka.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: kafka
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: internal
+      port: 9092
+      targetPort: 9092
+  selector:
+    app: kafka
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: kafka
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.7.1
+          ports:
+            - containerPort: 9092
+            - containerPort: 9093
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: PLAINTEXT://kafka-0.kafka.{{ .Values.global.namespace }}.svc.cluster.local:9092
+            - name: KAFKA_LISTENERS
+              value: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: CONTROLLER
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: 1@kafka-0.kafka.{{ .Values.global.namespace }}.svc.cluster.local:9093
+            - name: KAFKA_PROCESS_ROLES
+              value: broker,controller
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_LOG_DIRS
+              value: /var/lib/kafka/data
+            - name: CLUSTER_ID
+              value: MkU3OEVBNTcwNTJENDM2Qk
+          resources:
+            {{- toYaml .Values.kafka.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "kafka-topics --bootstrap-server localhost:9092 --list"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "kafka-topics --bootstrap-server localhost:9092 --list"]
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.kafka.storage }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init-topics
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: kafka-init
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        app: kafka-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-init
+          image: confluentinc/cp-kafka:7.7.1
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Waiting for Kafka..."
+              cub kafka-ready -b {{ include "ml-pipeline.kafkaBootstrapServers" . }} 1 120
+              echo "Creating topics..."
+              kafka-topics --bootstrap-server {{ include "ml-pipeline.kafkaBootstrapServers" . }} \
+                --create --if-not-exists --topic ml.prediction.requests --partitions 3 --replication-factor 1
+              kafka-topics --bootstrap-server {{ include "ml-pipeline.kafkaBootstrapServers" . }} \
+                --create --if-not-exists --topic ml.prediction.results --partitions 3 --replication-factor 1
+              echo "Done."
+              kafka-topics --bootstrap-server {{ include "ml-pipeline.kafkaBootstrapServers" . }} --list
+{{- end }}

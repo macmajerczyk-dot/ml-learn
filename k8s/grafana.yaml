@@ -1,0 +1,180 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource
+  namespace: ml-pipeline
+data:
+  datasource.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.ml-pipeline.svc.cluster.local:9090
+        isDefault: true
+        editable: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: ml-pipeline
+data:
+  dashboard.yml: |
+    apiVersion: 1
+    providers:
+      - name: "ML Pipeline"
+        orgId: 1
+        folder: ""
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: ml-pipeline
+data:
+  ml-pipeline.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "panels": [
+        {
+          "title": "Gateway — Request Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [{ "expr": "rate(gateway_requests_total[1m])", "legendFormat": "{{method}} {{endpoint}} {{status_code}}" }],
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+        },
+        {
+          "title": "Gateway — Latency (p50/p95/p99)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, rate(gateway_request_latency_seconds_bucket[5m]))", "legendFormat": "p50" },
+            { "expr": "histogram_quantile(0.95, rate(gateway_request_latency_seconds_bucket[5m]))", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, rate(gateway_request_latency_seconds_bucket[5m]))", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+        },
+        {
+          "title": "ML Worker — Inference Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [{ "expr": "rate(worker_inference_total[1m])", "legendFormat": "{{status}}" }],
+          "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] }
+        },
+        {
+          "title": "ML Worker — Inference Latency (p50/p95/p99)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, rate(worker_inference_latency_seconds_bucket[5m]))", "legendFormat": "p50" },
+            { "expr": "histogram_quantile(0.95, rate(worker_inference_latency_seconds_bucket[5m]))", "legendFormat": "p95" },
+            { "expr": "histogram_quantile(0.99, rate(worker_inference_latency_seconds_bucket[5m]))", "legendFormat": "p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+        },
+        {
+          "title": "Kafka — Produced vs Consumed",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "targets": [
+            { "expr": "rate(gateway_kafka_messages_produced_total[1m])", "legendFormat": "produced" },
+            { "expr": "rate(worker_messages_consumed_total[1m])", "legendFormat": "consumed" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] }
+        },
+        {
+          "title": "Errors",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "targets": [
+            { "expr": "rate(gateway_kafka_produce_errors_total[1m])", "legendFormat": "gateway produce errors" },
+            { "expr": "rate(worker_processing_errors_total[1m])", "legendFormat": "worker errors ({{error_type}})" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] }
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["ml-pipeline"],
+      "time": { "from": "now-1h", "to": "now" },
+      "title": "ML Pipeline Dashboard",
+      "uid": "ml-pipeline-k8s",
+      "version": 1
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: ml-pipeline
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.3.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: admin
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: datasource
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+      volumes:
+        - name: datasource
+          configMap:
+            name: grafana-datasource
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: ml-pipeline
+  labels:
+    app: grafana
+spec:
+  type: NodePort
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30030
+  selector:
+    app: grafana

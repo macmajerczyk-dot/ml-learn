@@ -1,0 +1,114 @@
+# Default values for ml-pipeline Helm chart.
+# Override per environment with values-dev.yaml or values-prod.yaml.
+
+global:
+  namespace: ml-pipeline
+
+# ---------------------------------------------------------------------------
+# Gateway
+# ---------------------------------------------------------------------------
+gateway:
+  replicaCount: 1
+  image:
+    repository: ml-pipeline-gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  ingress:
+    enabled: false
+    className: alb
+    annotations: {}
+    host: ""
+  env:
+    GW_LOG_LEVEL: "INFO"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+# ---------------------------------------------------------------------------
+# ML Worker
+# ---------------------------------------------------------------------------
+mlWorker:
+  replicaCount: 1
+  image:
+    repository: ml-pipeline-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+  env:
+    MLW_MODEL_DEVICE: "cpu"
+    MLW_LOG_LEVEL: "INFO"
+  metricsPort: 8001
+  modelCacheSize: 2Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 60
+
+# ---------------------------------------------------------------------------
+# Kafka (set enabled=false when using AWS MSK)
+# ---------------------------------------------------------------------------
+kafka:
+  enabled: true
+  bootstrapServers: "kafka.ml-pipeline.svc.cluster.local:9092"
+  storage: 1Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# Prometheus
+# ---------------------------------------------------------------------------
+prometheus:
+  enabled: true
+  service:
+    type: ClusterIP
+    port: 9090
+  retentionDays: 7d
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Grafana
+# ---------------------------------------------------------------------------
+grafana:
+  enabled: true
+  service:
+    type: ClusterIP
+    port: 3000
+  adminUser: admin
+  adminPassword: admin
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

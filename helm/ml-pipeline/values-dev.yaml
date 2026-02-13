@@ -1,0 +1,36 @@
+# Development environment overrides (Minikube / local K8s)
+
+gateway:
+  replicaCount: 1
+  image:
+    repository: ml-pipeline-gateway
+    tag: latest
+    pullPolicy: Never  # Use locally built images in Minikube
+  service:
+    type: NodePort
+
+mlWorker:
+  replicaCount: 1
+  image:
+    repository: ml-pipeline-worker
+    tag: latest
+    pullPolicy: Never
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+kafka:
+  enabled: true
+  bootstrapServers: "kafka.ml-pipeline.svc.cluster.local:9092"
+
+prometheus:
+  service:
+    type: NodePort
+
+grafana:
+  service:
+    type: NodePort

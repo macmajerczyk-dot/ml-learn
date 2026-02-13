@@ -1,0 +1,13 @@
+apiVersion: v2
+name: ml-pipeline
+description: Real-time ML inference pipeline with Kafka, FastAPI, and observability
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ml
+  - kafka
+  - fastapi
+  - inference
+maintainers:
+  - name: majer

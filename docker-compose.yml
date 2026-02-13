@@ -1,0 +1,114 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Topic initializer — creates required Kafka topics on the existing broker
+  # ---------------------------------------------------------------------------
+  kafka-init:
+    image: confluentinc/cp-kafka:7.7.1
+    networks:
+      - kafka-external
+      - default
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      echo 'Waiting for Kafka broker...'
+      cub kafka-ready -b kafka1:19092 1 60
+      echo 'Creating Kafka topics...'
+      kafka-topics --bootstrap-server kafka1:19092 --create --if-not-exists --topic ml.prediction.requests --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka1:19092 --create --if-not-exists --topic ml.prediction.results --partitions 3 --replication-factor 1
+      echo 'Topics created successfully.'
+      kafka-topics --bootstrap-server kafka1:19092 --list
+      "
+
+  # ---------------------------------------------------------------------------
+  # Application services
+  # ---------------------------------------------------------------------------
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: gateway
+    ports:
+      - "8000:8000"
+    environment:
+      GW_KAFKA_BOOTSTRAP_SERVERS: kafka1:19092
+      GW_LOG_LEVEL: INFO
+    networks:
+      - kafka-external
+      - default
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r = httpx.get('http://localhost:8000/health'); r.raise_for_status()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  ml-worker:
+    build:
+      context: .
+      dockerfile: services/ml_worker/Dockerfile
+    container_name: ml-worker
+    ports:
+      - "8001:8001"
+    environment:
+      MLW_KAFKA_BOOTSTRAP_SERVERS: kafka1:19092
+      MLW_MODEL_DEVICE: cpu
+      MLW_LOG_LEVEL: INFO
+    networks:
+      - kafka-external
+      - default
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Observability stack
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    depends_on:
+      - gateway
+      - ml-worker
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  model_cache:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  kafka-external:
+    external: true
+    name: kafka-stack-docker-compose_default

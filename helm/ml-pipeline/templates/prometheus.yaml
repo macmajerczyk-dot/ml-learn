@@ -1,0 +1,83 @@
+{{- if .Values.prometheus.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: prometheus
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    scrape_configs:
+      - job_name: "gateway"
+        static_configs:
+          - targets: ["gateway.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.gateway.service.port }}"]
+            labels:
+              service: "gateway"
+      - job_name: "ml-worker"
+        static_configs:
+          - targets: ["ml-worker.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.mlWorker.metricsPort }}"]
+            labels:
+              service: "ml-worker"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: prometheus
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.54.1
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.retention.time={{ .Values.prometheus.retentionDays }}"
+          ports:
+            - containerPort: 9090
+          resources:
+            {{- toYaml .Values.prometheus.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: prometheus
+    {{- include "ml-pipeline.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.prometheus.service.type }}
+  ports:
+    - port: {{ .Values.prometheus.service.port }}
+      targetPort: 9090
+  selector:
+    app: prometheus
+{{- end }}

@@ -1,0 +1,76 @@
+# Production environment overrides (AWS EKS + MSK)
+# Image tags are overridden by CI/CD pipeline at deploy time.
+
+gateway:
+  replicaCount: 2
+  image:
+    repository: ""  # Set by CI/CD: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/ml-pipeline-gateway
+    tag: ""         # Set by CI/CD: git SHA
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: true
+    className: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/healthcheck-path: /health
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/certificate-arn: ""  # Set to your ACM cert ARN
+    host: api.ml-pipeline.example.com
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+mlWorker:
+  replicaCount: 2
+  image:
+    repository: ""  # Set by CI/CD
+    tag: ""         # Set by CI/CD
+    pullPolicy: Always
+  env:
+    MLW_MODEL_DEVICE: "cpu"
+    MLW_LOG_LEVEL: "INFO"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 60
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  modelCacheSize: 5Gi
+
+# Disable self-hosted Kafka — use AWS MSK instead
+kafka:
+  enabled: false
+  bootstrapServers: "b-1.ml-pipeline-msk.xxxxx.kafka.eu-west-1.amazonaws.com:9092,b-2.ml-pipeline-msk.xxxxx.kafka.eu-west-1.amazonaws.com:9092"
+
+prometheus:
+  enabled: true
+  retentionDays: 30d
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+grafana:
+  enabled: true
+  adminPassword: ""  # Set via sealed secret in production

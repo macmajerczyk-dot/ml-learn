@@ -1,0 +1,194 @@
+name: CD — Build, Push to ECR, Deploy to EKS
+
+# Triggers on push to main (after CI passes) or manual dispatch
+on:
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - prod
+
+env:
+  AWS_REGION: eu-west-1
+  ECR_REGISTRY: ""  # Set automatically in the login step
+  EKS_CLUSTER_NAME: ml-pipeline-cluster
+  HELM_RELEASE_NAME: ml-pipeline
+  HELM_CHART_PATH: helm/ml-pipeline
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Build & push Docker images to Amazon ECR
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    # Only run if CI passed (or manual dispatch)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      gateway_repo: ${{ steps.meta.outputs.gateway_repo }}
+      gateway_image: ${{ steps.meta.outputs.gateway_image }}
+      worker_repo: ${{ steps.meta.outputs.worker_repo }}
+      worker_image: ${{ steps.meta.outputs.worker_image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          REGISTRY=${{ steps.ecr-login.outputs.registry }}
+          TAG=${{ github.sha }}
+          echo "image_tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "gateway_repo=${REGISTRY}/ml-pipeline-gateway" >> $GITHUB_OUTPUT
+          echo "gateway_image=${REGISTRY}/ml-pipeline-gateway:${TAG}" >> $GITHUB_OUTPUT
+          echo "worker_repo=${REGISTRY}/ml-pipeline-worker" >> $GITHUB_OUTPUT
+          echo "worker_image=${REGISTRY}/ml-pipeline-worker:${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build & push gateway image
+        run: |
+          docker build -f services/gateway/Dockerfile \
+            -t ${{ steps.meta.outputs.gateway_image }} \
+            -t ${{ steps.ecr-login.outputs.registry }}/ml-pipeline-gateway:latest .
+          docker push ${{ steps.meta.outputs.gateway_image }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/ml-pipeline-gateway:latest
+
+      - name: Build & push worker image
+        run: |
+          docker build -f services/ml_worker/Dockerfile \
+            -t ${{ steps.meta.outputs.worker_image }} \
+            -t ${{ steps.ecr-login.outputs.registry }}/ml-pipeline-worker:latest .
+          docker push ${{ steps.meta.outputs.worker_image }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/ml-pipeline-worker:latest
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Deploy to EKS using Helm
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+      url: https://api.ml-pipeline.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Determine values file
+        id: values
+        run: |
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          echo "env=${ENV}" >> $GITHUB_OUTPUT
+          echo "values_file=${{ env.HELM_CHART_PATH }}/values-${ENV}.yaml" >> $GITHUB_OUTPUT
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH }} \
+            --namespace ml-pipeline \
+            --create-namespace \
+            --values ${{ env.HELM_CHART_PATH }}/values.yaml \
+            --values ${{ steps.values.outputs.values_file }} \
+            --set gateway.image.repository=${{ needs.build-and-push.outputs.gateway_repo }} \
+            --set gateway.image.tag=${{ needs.build-and-push.outputs.image_tag }} \
+            --set mlWorker.image.repository=${{ needs.build-and-push.outputs.worker_repo }} \
+            --set mlWorker.image.tag=${{ needs.build-and-push.outputs.image_tag }} \
+            --wait \
+            --timeout 10m
+
+      - name: Verify deployment
+        run: |
+          echo "=== Pods ==="
+          kubectl -n ml-pipeline get pods
+          echo ""
+          echo "=== Services ==="
+          kubectl -n ml-pipeline get svc
+          echo ""
+          echo "=== Rollout status ==="
+          kubectl -n ml-pipeline rollout status deployment/gateway --timeout=120s
+          kubectl -n ml-pipeline rollout status deployment/ml-worker --timeout=300s
+
+      - name: Smoke test
+        run: |
+          # Port-forward gateway for smoke test
+          kubectl -n ml-pipeline port-forward svc/gateway 8000:8000 &
+          sleep 5
+
+          # Health check
+          curl -sf http://localhost:8000/health | python3 -m json.tool
+
+          # Submit prediction
+          RESPONSE=$(curl -sf -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"text": "Deployment successful!"}')
+          echo "Response: $RESPONSE"
+          REQUEST_ID=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['request_id'])")
+
+          # Wait and check result
+          sleep 15
+          RESULT=$(curl -sf http://localhost:8000/predict/$REQUEST_ID)
+          echo "Result: $RESULT"
+          echo $RESULT | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d.get('status') == 'completed', f'Expected completed, got: {d}'
+          print('Smoke test PASSED')
+          "
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: Notify (optional — Slack, email, etc.)
+  # ---------------------------------------------------------------------------
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy]
+    if: always()
+    steps:
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Tag** | \`${{ needs.build-and-push.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Environment** | ${{ github.event.inputs.environment || 'dev' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Status** | ${{ needs.build-and-push.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deploy Status** | ${{ needs.deploy.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
