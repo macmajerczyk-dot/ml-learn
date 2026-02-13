@@ -223,7 +223,7 @@ resource "aws_iam_instance_profile" "ec2_profile" {
 # ---------------------------------------------------------------------------
 resource "aws_instance" "ml_pipeline" {
   ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t2.micro"
+  instance_type          = "t3.micro"
   key_name               = var.key_pair_name
   vpc_security_group_ids = [aws_security_group.ml_pipeline.id]
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
@@ -232,7 +232,7 @@ resource "aws_instance" "ml_pipeline" {
   associate_public_ip_address = true
 
   root_block_device {
-    volume_size = 20  # GB — free tier allows up to 30GB
+    volume_size = 30  # GB — free tier allows up to 30GB
     volume_type = "gp3"
   }
 
