@@ -129,9 +129,7 @@ async def metrics_middleware(request: Request, call_next) -> Response:
     finally:
         elapsed = time.perf_counter() - start
         ACTIVE_CONNECTIONS.dec()
-        REQUEST_LATENCY.labels(
-            method=request.method, endpoint=request.url.path
-        ).observe(elapsed)
+        REQUEST_LATENCY.labels(method=request.method, endpoint=request.url.path).observe(elapsed)
         status = response.status_code if "response" in dir() else 500
         REQUEST_COUNT.labels(
             method=request.method,

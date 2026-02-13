@@ -21,9 +21,7 @@ class PredictionRequest(BaseModel):
 
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     text: str = Field(..., min_length=1, max_length=5000)
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class PredictionResult(BaseModel):
@@ -35,9 +33,7 @@ class PredictionResult(BaseModel):
     model_name: str
     inference_time_ms: float
     status: TaskStatus = TaskStatus.COMPLETED
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class HealthResponse(BaseModel):

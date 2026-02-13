@@ -27,9 +27,7 @@ SAMPLE_TEXTS = [
 ]
 
 
-async def send_request(
-    client: httpx.AsyncClient, url: str, semaphore: asyncio.Semaphore
-) -> dict:
+async def send_request(client: httpx.AsyncClient, url: str, semaphore: asyncio.Semaphore) -> dict:
     text = random.choice(SAMPLE_TEXTS)
     async with semaphore:
         start = time.perf_counter()

@@ -11,9 +11,10 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client():
     """Create a test client with mocked Kafka producer."""
-    with patch("services.gateway.app.create_producer") as mock_create_prod, \
-         patch("services.gateway.app.create_consumer") as mock_create_cons:
-
+    with (
+        patch("services.gateway.app.create_producer") as mock_create_prod,
+        patch("services.gateway.app.create_consumer") as mock_create_cons,
+    ):
         mock_producer = AsyncMock()
         mock_create_prod.return_value = mock_producer
 
@@ -40,6 +41,7 @@ class TestHealthEndpoint:
     def test_health_with_producer(self, client):
         c, mock_producer, _ = client
         import services.gateway.app as gw
+
         gw.producer = mock_producer
         response = c.get("/health")
         assert response.status_code == 200
@@ -50,6 +52,7 @@ class TestHealthEndpoint:
     def test_health_without_producer(self, client):
         c, _, _ = client
         import services.gateway.app as gw
+
         gw.producer = None
         response = c.get("/health")
         assert response.status_code == 200
