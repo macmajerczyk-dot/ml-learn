@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import random
 import time
 
@@ -83,12 +82,12 @@ async def run_load_test(url: str, num_requests: int, concurrency: int) -> None:
         print(f"  Latency max: {max(latencies):.1f} ms")
 
     if failures:
-        print(f"\nSample failures:")
+        print("\nSample failures:")
         for f in failures[:5]:
             print(f"  {f}")
 
     # Poll for results
-    print(f"\nPolling for inference results (waiting 15s)...")
+    print("\nPolling for inference results (waiting 15s)...")
     await asyncio.sleep(15)
     completed = 0
     async with httpx.AsyncClient() as client:

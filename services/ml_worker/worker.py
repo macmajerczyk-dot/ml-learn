@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from threading import Thread
 
 from prometheus_client import start_http_server
 

@@ -22,8 +22,8 @@ def client():
         mock_consumer.__aiter__ = AsyncMock(return_value=iter([]))
         mock_create_cons.return_value = mock_consumer
 
-        from services.gateway.app import app, results_store
         import services.gateway.app as gateway_module
+        from services.gateway.app import app, results_store
 
         # Inject mock producer
         gateway_module.producer = mock_producer
