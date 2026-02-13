@@ -1,6 +1,6 @@
 # ML Pipeline — Real-Time Inference with Kafka, FastAPI & Observability
 
-A production-style, event-driven ML inference pipeline demonstrating backend engineering, cloud-native microservices, and MLOps best practices.
+A production-style, event-driven ML inference pipeline demonstrating backend engineering, cloud-native microservices, and MLOps best practices. Deployed on AWS Free Tier.
 
 ## Architecture
 
