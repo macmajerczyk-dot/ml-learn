@@ -1,0 +1,165 @@
+name: CD — Free Tier (Build → ECR → Deploy to EC2)
+
+on:
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: eu-west-1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Build & push Docker images to Amazon ECR
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      gateway_image: ${{ steps.meta.outputs.gateway_image }}
+      worker_image: ${{ steps.meta.outputs.worker_image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          REGISTRY=${{ steps.ecr-login.outputs.registry }}
+          TAG=${{ github.sha }}
+          echo "image_tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "gateway_image=${REGISTRY}/ml-pipeline-gateway:${TAG}" >> $GITHUB_OUTPUT
+          echo "worker_image=${REGISTRY}/ml-pipeline-worker:${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build & push gateway image
+        run: |
+          docker build -f services/gateway/Dockerfile \
+            -t ${{ steps.meta.outputs.gateway_image }} \
+            -t ${{ steps.ecr-login.outputs.registry }}/ml-pipeline-gateway:latest .
+          docker push ${{ steps.meta.outputs.gateway_image }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/ml-pipeline-gateway:latest
+
+      - name: Build & push worker image
+        run: |
+          docker build -f services/ml_worker/Dockerfile \
+            -t ${{ steps.meta.outputs.worker_image }} \
+            -t ${{ steps.ecr-login.outputs.registry }}/ml-pipeline-worker:latest .
+          docker push ${{ steps.meta.outputs.worker_image }}
+          docker push ${{ steps.ecr-login.outputs.registry }}/ml-pipeline-worker:latest
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Deploy to EC2 via SSH
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ec2-user/app
+
+            # Pull latest code
+            git pull origin main
+
+            # Login to ECR
+            REGION=${{ env.AWS_REGION }}
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            aws ecr get-login-password --region $REGION | \
+              docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+
+            # Set image env vars and deploy
+            export ECR_GATEWAY_IMAGE="${{ needs.build-and-push.outputs.gateway_image }}"
+            export ECR_WORKER_IMAGE="${{ needs.build-and-push.outputs.worker_image }}"
+
+            docker compose -f docker-compose-freetier.yml pull gateway ml-worker
+            docker compose -f docker-compose-freetier.yml up -d --remove-orphans
+
+            # Wait for health check
+            echo "Waiting for gateway to be healthy..."
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "Gateway is healthy!"
+                break
+              fi
+              echo "Attempt $i/30..."
+              sleep 10
+            done
+
+            docker compose -f docker-compose-freetier.yml ps
+
+      - name: Smoke test
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+
+            # Health check
+            echo "=== Health Check ==="
+            curl -sf http://localhost:8000/health | python3 -m json.tool
+
+            # Submit prediction
+            echo "=== Submit Prediction ==="
+            RESPONSE=$(curl -sf -X POST http://localhost:8000/predict \
+              -H "Content-Type: application/json" \
+              -d '{"text": "Free tier deployment works!"}')
+            echo "$RESPONSE" | python3 -m json.tool
+            REQUEST_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['request_id'])")
+
+            # Wait for result
+            sleep 15
+            echo "=== Get Result ==="
+            RESULT=$(curl -sf http://localhost:8000/predict/$REQUEST_ID)
+            echo "$RESULT" | python3 -m json.tool
+
+            echo "$RESULT" | python3 -c "
+            import sys, json
+            d = json.load(sys.stdin)
+            assert d.get('status') == 'completed', f'Expected completed, got: {d}'
+            print('Smoke test PASSED')
+            "
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: Summary
+  # ---------------------------------------------------------------------------
+  notify:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy]
+    if: always()
+    steps:
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Tag** | \`${{ needs.build-and-push.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build** | ${{ needs.build-and-push.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Deploy** | ${{ needs.deploy.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY

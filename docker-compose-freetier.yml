@@ -1,0 +1,136 @@
+# ---------------------------------------------------------------------------
+# Free-Tier Docker Compose — optimized for EC2 t2.micro (1GB RAM + 2GB swap)
+# Uses Redpanda instead of Kafka (Kafka-compatible, ~150MB vs ~512MB)
+# ---------------------------------------------------------------------------
+services:
+  # ---------------------------------------------------------------------------
+  # Redpanda — lightweight Kafka-compatible broker
+  # ---------------------------------------------------------------------------
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=150M
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+      - --set=redpanda.auto_create_topics_enabled=true
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+
+  # ---------------------------------------------------------------------------
+  # Topic initializer
+  # ---------------------------------------------------------------------------
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    container_name: redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      rpk topic create ml.prediction.requests -p 1 -r 1 --brokers redpanda:9092 || true
+      rpk topic create ml.prediction.results -p 1 -r 1 --brokers redpanda:9092 || true
+      echo 'Topics:'
+      rpk topic list --brokers redpanda:9092
+      "
+
+  # ---------------------------------------------------------------------------
+  # Gateway
+  # ---------------------------------------------------------------------------
+  gateway:
+    image: ${ECR_GATEWAY_IMAGE:-ml-pipeline-gateway:latest}
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: gateway
+    ports:
+      - "8000:8000"
+    environment:
+      GW_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      GW_LOG_LEVEL: INFO
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r = httpx.get('http://localhost:8000/health'); r.raise_for_status()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+
+  # ---------------------------------------------------------------------------
+  # ML Worker
+  # ---------------------------------------------------------------------------
+  ml-worker:
+    image: ${ECR_WORKER_IMAGE:-ml-pipeline-worker:latest}
+    build:
+      context: .
+      dockerfile: services/ml_worker/Dockerfile
+    container_name: ml-worker
+    ports:
+      - "8001:8001"
+    environment:
+      MLW_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      MLW_MODEL_DEVICE: cpu
+      MLW_LOG_LEVEL: INFO
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  # ---------------------------------------------------------------------------
+  # Observability (optional — comment out to save ~200MB RAM)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus-freetier.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=3d"
+      - "--storage.tsdb.retention.size=256MB"
+    depends_on:
+      - gateway
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  redpanda_data:
+  model_cache:

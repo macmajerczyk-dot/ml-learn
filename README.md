@@ -241,7 +241,57 @@ minikube stop
 - **Structured logging** — JSON logs with service context for log aggregation (ELK/Loki)
 - **Separate metrics ports** — Each service exposes its own `/metrics` for Prometheus scraping
 
-## AWS Production Deployment
+## AWS Deployment
+
+### Option A: Free Tier ($0/mo)
+
+Uses a single **EC2 t2.micro** with Docker Compose + **Redpanda** (lightweight Kafka-compatible broker).
+
+| Component | Free-Tier Choice |
+|---|---|
+| Compute | EC2 `t2.micro` (1GB RAM + 2GB swap) |
+| Streaming | Redpanda (~150MB vs Kafka ~512MB) |
+| Registry | ECR (500MB free storage) |
+| Storage | 20GB gp3 EBS (30GB free) |
+| Networking | Default VPC (no NAT gateway) |
+
+```bash
+# 1. Create an EC2 key pair in AWS Console (EC2 → Key Pairs → Create)
+
+# 2. Provision infrastructure
+cd infra/terraform/free-tier
+terraform init
+terraform plan -var="key_pair_name=my-key"
+terraform apply -var="key_pair_name=my-key"
+
+# 3. SSH into the instance
+ssh -i my-key.pem ec2-user@<PUBLIC_IP>
+
+# 4. Deploy (Docker + Compose are pre-installed by user_data)
+cd /home/ec2-user/app
+./deploy.sh
+
+# 5. Test from your machine
+curl http://<PUBLIC_IP>:8000/health
+curl -X POST http://<PUBLIC_IP>:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Free tier works!"}'
+```
+
+The CD pipeline (`.github/workflows/cd-freetier.yml`) automates this: push to `main` → build images → push to ECR → SSH deploy to EC2 → smoke test.
+
+**GitHub Secrets for free-tier CD:**
+
+| Secret | Description |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | IAM credentials |
+| `AWS_SECRET_ACCESS_KEY` | IAM credentials |
+| `EC2_HOST` | Public IP of the EC2 instance |
+| `EC2_SSH_KEY` | Contents of the `.pem` private key |
+
+---
+
+### Option B: Production (EKS + MSK, ~$276/mo)
 
 ### How the CD Pipeline Works
 
